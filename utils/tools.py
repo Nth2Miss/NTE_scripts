@@ -93,25 +93,20 @@ def find_game_window():
     global _TARGET_HWND
     target_pid = None
 
-    # 1. 遍历当前电脑所有进程，找到 HTGame.exe 的进程 PID
     for proc in psutil.process_iter(['pid', 'name']):
         if proc.info['name'] and proc.info['name'].lower() == TARGET_PROCESS_NAME.lower():
             target_pid = proc.info['pid']
             break
 
     if not target_pid:
-        return None  # 游戏根本没运行
+        return None
 
     hwnds = []
 
-    # 2. 遍历所有窗口，找出 PID 和游戏匹配的那个窗口
     def callback(hwnd, hwnds_list):
-        # 必须是肉眼可见的窗口
         if win32gui.IsWindowVisible(hwnd):
-            # 获取这个窗口属于哪个进程
             _, pid = win32process.GetWindowThreadProcessId(hwnd)
             if pid == target_pid:
-                # 过滤掉一些游戏底层的无名幽灵窗口
                 title = win32gui.GetWindowText(hwnd).strip()
                 if title:
                     hwnds_list.append(hwnd)
@@ -120,18 +115,18 @@ def find_game_window():
     win32gui.EnumWindows(callback, hwnds)
 
     if hwnds:
-        # 如果找到了，取第一个（通常就是主渲染窗口）
         _TARGET_HWND = hwnds[0]
         real_title = win32gui.GetWindowText(_TARGET_HWND)
-        print(f"[*] 通过进程 {TARGET_PROCESS_NAME} 锁定成功！游戏真实标题是: '{real_title}'")
+        # print(f"[*] 通过进程 {TARGET_PROCESS_NAME} 锁定成功！游戏真实标题是: '{real_title}'")
+        print(f"[*] 通过进程 {TARGET_PROCESS_NAME} 锁定成功！")
         return _TARGET_HWND
 
     return None
 
 
 RESOLUTION_CONFIG = {
-    "base_width": 1920,  # 开发基准宽度
-    "base_height": 1080,  # 开发基准高度
+    "base_width": 1920,
+    "base_height": 1080,
     "curr_width": None,
     "curr_height": None
 }
@@ -169,6 +164,8 @@ def adapt_coord(x: int, y: int):
 # PC 后台原生控制与图像识别 (Win32 API)
 # ============================================
 class PCAutomation:
+    def __init__(self):
+        pass
 
     @staticmethod
     def capture_screen():
@@ -207,29 +204,21 @@ class PCAutomation:
         import win32gui, win32con
         hwnd = _TARGET_HWND
         if hwnd:
-            # 如果窗口被最小化了，先恢复它
             if win32gui.IsIconic(hwnd):
                 win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-
-            # 强行置顶并夺取焦点
             try:
-                # 某些情况下 SetForegroundWindow 会报错，需要先发一个 Alt 键骗过系统
                 import win32com.client
                 shell = win32com.client.Dispatch("WScript.Shell")
-                shell.SendKeys('%')  # 发送一次 Alt 键
-
+                shell.SendKeys('%')
                 win32gui.SetForegroundWindow(hwnd)
                 win32gui.BringWindowToTop(hwnd)
                 print(">>> 已成功将游戏窗口置于前台")
-                time.sleep(0.5)  # 给窗口反应时间
+                time.sleep(0.5)
             except Exception as e:
                 print(f"⚠️ 无法置顶窗口: {e}")
 
-    @staticmethod
-    def click(x: int, y: int, is_actual: bool = False, ui_mode: bool = True, show_log: bool = True):
-        """
-        后台点击与 UI 闪现模式
-        """
+    def click(self, x: int, y: int, is_actual: bool = False, move: bool = False, show_log: bool = True):
+        """统一鼠标点击接口"""
         hwnd = _TARGET_HWND
         if not hwnd: return
 
@@ -239,58 +228,47 @@ class PCAutomation:
             rel_x, rel_y = int(x), int(y)
 
         lparam = win32api.MAKELONG(rel_x, rel_y)
+        original_pos = None
 
-        # 1. 焦点欺骗
         win32gui.SendMessage(hwnd, win32con.WM_ACTIVATE, win32con.WA_ACTIVE, 0)
 
-        # 2. 物理鼠标闪现 (UI 模式)
-        original_pos = None
-        if ui_mode:
-            try:
+        try:
+            if move:
                 original_pos = win32api.GetCursorPos()
                 screen_x, screen_y = win32gui.ClientToScreen(hwnd, (rel_x, rel_y))
                 win32api.SetCursorPos((screen_x, screen_y))
+                time.sleep(random.uniform(0.01, 0.015))
 
-                # 【时序优化 1】：确保 Hover 被游戏稳定捕获 (20毫秒)
-                time.sleep(0.02)
-            except Exception:
-                pass
+            win32gui.PostMessage(hwnd, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, lparam)
+            time.sleep(random.uniform(0.01, 0.02))
+            win32gui.PostMessage(hwnd, win32con.WM_LBUTTONUP, 0, lparam)
 
-        # 3. 按下与抬起
-        win32gui.PostMessage(hwnd, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, lparam)
+            if move:
+                time.sleep(0.03)
 
-        # 【时序优化 2】：按压时间固定在 20~30 毫秒之间，足够触发，绝对不会引起长按
-        time.sleep(random.uniform(0.02, 0.03))
+        except Exception as e:
+            print(f"点击异常: {e}")
 
-        win32gui.PostMessage(hwnd, win32con.WM_LBUTTONUP, 0, lparam)
-
-        # 4. 鼠标归位
-        if ui_mode and original_pos:
-            # 【时序优化 3】：
-            # 必须等待游戏主线程彻底处理完 LBUTTONUP 消息！
-            # 如果不加这个延迟，鼠标瞬间移走就会变成“拖拽滑动”
-            time.sleep(0.03)
-            try:
-                win32api.SetCursorPos(original_pos)
-            except Exception:
-                pass
+        finally:
+            if move and original_pos:
+                try:
+                    win32api.SetCursorPos(original_pos)
+                except Exception:
+                    pass
 
         if show_log:
-            mode_str = "UI闪现" if ui_mode else "纯后台"
-            print(f"后台点击[{mode_str}]: 传入({x}, {y}) -> 客户区({rel_x}, {rel_y})")
+            mode_str = "物理闪现" if move else "纯后台"
+            print(f"点击[{mode_str}]: 逻辑({x}, {y}) -> 客户区({rel_x}, {rel_y})")
 
-    @staticmethod
-    def send_key(key: str, show_log: bool = True):
-        """纯后台按键（对齐 ok-nte 的 send_key）"""
+    def send_key(self, key: str, show_log: bool = True):
+        """纯后台按键（用于 F键交互、空格跳跃/钓鱼等）"""
         hwnd = _TARGET_HWND
         if not hwnd: return
 
-        # 支持单个字母和常见的特殊按键
         key_upper = key.upper()
         if len(key_upper) == 1:
             vk_code = ord(key_upper)
         else:
-            # 常见特殊按键映射字典
             special_keys = {
                 'SPACE': win32con.VK_SPACE,
                 'ENTER': win32con.VK_RETURN,
@@ -305,27 +283,20 @@ class PCAutomation:
                 print(f"⚠️ 暂不支持的按键: '{key}'")
                 return
 
-        # 1. 焦点欺骗：必须有，否则后台游戏会丢弃键盘输入
         win32gui.SendMessage(hwnd, win32con.WM_ACTIVATE, win32con.WA_ACTIVE, 0)
 
-        # 2. 发送按下指令
         win32gui.PostMessage(hwnd, win32con.WM_KEYDOWN, vk_code, 0)
-
-        # 3. 按压时间必须跨越至少 2~3 个游戏渲染帧
-        # 0.03 ~ 0.05 秒既能保证 100% 触发，又不会触发长按逻辑
         time.sleep(random.uniform(0.03, 0.05))
-
-        # 4. 发送抬起指令
         win32gui.PostMessage(hwnd, win32con.WM_KEYUP, vk_code, 0)
 
         if show_log:
-            print(f"后台按键: '{key_upper}'")
+            print(f"纯后台按键: '{key_upper}'")
 
 
 class ImageMatcher:
     @staticmethod
     def compare_template(screen_bgr, template_path: str, threshold: float = 0.8) -> Dict:
-        """模板匹配 """
+        """模板匹配"""
         template_bgr = cv2.imread(template_path)
         if template_bgr is None:
             raise ValueError(f"无法读取模板图片: {template_path}")
@@ -336,12 +307,8 @@ class ImageMatcher:
         _, max_val, _, max_loc = cv2.minMaxLoc(res)
         is_match = max_val >= threshold
 
-        # 计算中心点
         cx = max_loc[0] + template_bgr.shape[1] // 2
         cy = max_loc[1] + template_bgr.shape[0] // 2
-
-        # 【重点】因为我们的截图就是窗口客户区，这里的 cx, cy 已经是窗口内部的相对坐标了！
-        # 直接返回，不需要做任何屏幕绝对坐标的转换。
 
         return {
             "is_match": is_match,

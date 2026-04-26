@@ -3,7 +3,7 @@ import time
 import importlib.util
 import os
 import threading
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject, pyqtSlot, QMetaObject, Q_ARG
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject, pyqtSlot, QMetaObject, Q_ARG, QTimer
 from PyQt6.QtWidgets import (
     QHBoxLayout, QVBoxLayout, QWidget, QApplication
 )
@@ -161,7 +161,7 @@ class ConnectInterface(ScrollArea):
         self.vBoxLayout.addWidget(self.connectCard)
         self.vBoxLayout.addStretch(1)
 
-    def try_connect(self):
+    def try_connect(self, silent_fail=False):
         import utils.tools
         import win32gui  # 引入底层的 win32gui 来读取名字
 
@@ -169,18 +169,20 @@ class ConnectInterface(ScrollArea):
         if win:
             utils.tools.init_resolution()
             self.statusTag.setText("✅ 已连接")
-            # 使用更安全的 StyleSheet 语法修改颜色，防止组件版本差异报错
             self.statusTag.setStyleSheet("color: #5cb85c;")
 
-            # 【修复核心】win 现在是纯数字句柄，必须用 Win32 API 来获取它的标题
             real_title = win32gui.GetWindowText(win)
 
             InfoBar.success("连接成功", f"已锁定窗口: {real_title}", parent=self)
             self.window().setProperty("game_connected", True)
+            return True
         else:
             self.statusTag.setText("❌ 未找到应用")
             self.statusTag.setStyleSheet("color: #d9534f;")
-            InfoBar.error("连接失败", "请确保《异环》游戏已启动", parent=self)
+            # 启动时的自动连接如果失败，不弹窗报错以免打扰用户
+            if not silent_fail:
+                InfoBar.error("连接失败", "请确保《异环》游戏已启动", parent=self)
+            return False
 
 
 # ============================================
@@ -248,7 +250,9 @@ class HomeInterface(ScrollArea):
         self.debugCard.hBoxLayout.addSpacing(15)
 
         self.vBoxLayout.addWidget(self.debugCard)
-
+        # ====== 初始化时根据配置决定是否显示调试卡片 ======
+        is_debug = APP_CONFIG.get("debug_mode", False) if APP_CONFIG else False
+        self.debugCard.setVisible(is_debug)
         # ==================================
 
         # 店长特供卡片
@@ -310,6 +314,10 @@ class HomeInterface(ScrollArea):
         self.logText.setFixedHeight(350)
         self.vBoxLayout.addWidget(self.logText)
         self.vBoxLayout.addStretch(1)
+
+    def set_debug_visibility(self, visible):
+        """动态控制调试卡片的显示与隐藏"""
+        self.debugCard.setVisible(visible)
 
     def refresh_scripts(self):
         """扫描 scripts 目录并更新下拉框"""
@@ -545,7 +553,7 @@ class OtherSettingInterface(ScrollArea):
 
 
 # ============================================
-# 6. 空白基础设置页面
+# 6. 基础设置页面
 # ============================================
 class SettingInterface(ScrollArea):
     def __init__(self, parent=None):
@@ -564,10 +572,35 @@ class SettingInterface(ScrollArea):
         self.titleLabel.setFont(QFont("Microsoft YaHei", 18, QFont.Weight.Bold))
         self.vBoxLayout.addWidget(self.titleLabel)
 
-        self.placeholderLabel = BodyLabel("基础配置区 (虚位以待)", self.scrollWidget)
-        self.placeholderLabel.setTextColor("#999999", "#666666")
-        self.vBoxLayout.addWidget(self.placeholderLabel)
+        # ====== 新增：开发者选项卡片 ======
+        self.debugCard = SettingCard(
+            FIF.DEVELOPER_TOOLS,
+            "开发者选项",
+            "开启后，将在【控制台】页面显示“脚本调试模式”",
+            self.scrollWidget
+        )
+        self.debugSwitch = SwitchButton()
+        self.debugSwitch.setOnText("已开启")
+        self.debugSwitch.setOffText("已关闭")
+
+        # 读取初始配置
+        is_debug = APP_CONFIG.get("debug_mode", False) if APP_CONFIG else False
+        self.debugSwitch.setChecked(is_debug)
+        self.debugSwitch.checkedChanged.connect(self.on_debug_changed)
+
+        self.debugCard.hBoxLayout.addWidget(self.debugSwitch)
+        self.debugCard.hBoxLayout.addSpacing(15)
+
+        self.vBoxLayout.addWidget(self.debugCard)
         self.vBoxLayout.addStretch(1)
+
+    def on_debug_changed(self, is_checked):
+        if APP_CONFIG:
+            APP_CONFIG.set("debug_mode", is_checked)
+
+        # 动态通知 HomeInterface 更新卡片显示状态
+        if hasattr(self.window(), "homeInterface"):
+            self.window().homeInterface.set_debug_visibility(is_checked)
 
 
 # ============================================
@@ -576,7 +609,7 @@ class SettingInterface(ScrollArea):
 class MainWindow(FluentWindow):
     def __init__(self):
         super().__init__()
-        self.setProperty("game_connected", False)  # 初始未连接状态
+        self.setProperty("game_connected", False)
         self.setWindowTitle('异环 自动化平台')
         self.setWindowIcon(QIcon('assets/logo.png'))
         self.resize(900, 700)
@@ -600,6 +633,17 @@ class MainWindow(FluentWindow):
         self.settingInterface = SettingInterface(self)
         self.settingInterface.setObjectName('settingInterface')
         self.addSubInterface(self.settingInterface, FIF.SETTING, '设置', NavigationItemPosition.BOTTOM)
+
+        # ====== 延迟 100ms 触发自动连接 ======
+        QTimer.singleShot(100, self.auto_connect_on_startup)
+
+    def auto_connect_on_startup(self):
+        """应用启动时自动尝试连接"""
+        print(">>> 正在尝试自动连接游戏...")
+
+        if self.connectInterface.try_connect(silent_fail=True):
+            # 连接成功，使用 FluentWidgets 内置方法跳转到控制台
+            self.switchTo(self.homeInterface)
 
     def closeEvent(self, event):
         w = MessageBox('确认退出', '确定要关闭程序吗？', self)

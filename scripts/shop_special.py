@@ -20,18 +20,26 @@ COORDS = {
 }
 # =================================================================
 
+# 1. 在全局实例化底层的核心控制器
+pc = PCAutomation()
+
+# 2. 定义局部的 click 函数，拦截所有点击并强制加上 move=True
+def click(*args, **kwargs):
+    kwargs.setdefault("move", True)
+    return pc.click(*args, **kwargs)
+
 def combat_prep(times=3):
     """封装：确认选择 -> 进场 -> 移动 -> 开大"""
     print("-> 开始驱赶刁民...")
     for _ in range(times):
         # 使用我们封装的后台点击 (默认会触发 UI 物理闪现机制和坐标等比缩放)
-        PCAutomation.click(*COORDS["100T"])
+        click(*COORDS["100T"])
         time.sleep(1)
 
     time.sleep(1)
-    PCAutomation.click(*COORDS["quit"])
+    click(*COORDS["quit"])
     time.sleep(1)
-    PCAutomation.click(*COORDS["claim"])
+    click(*COORDS["claim"])
     print("-> 结算 领取奖励")
     time.sleep(5)
 
@@ -46,12 +54,12 @@ def main():
     while True:
         # 1. 后台发送 F 键 (使用刚改好的 send_key)
         print(">>> 执行操作: 后台按 F 键")
-        PCAutomation.send_key('F')
+        pc.send_key('F')
         time.sleep(2)
 
         # 2. 后台点击关卡1-1
         print(">>> 执行操作: 后台点击 关卡1-1")
-        PCAutomation.click(*COORDS["level_1_1"])
+        click(*COORDS["level_1_1"])
         time.sleep(1)
 
         # 3. 后台静默识图
@@ -65,7 +73,7 @@ def main():
                 print(f">>> 识图成功！准备点击坐标: ({cx}, {cy})")
 
                 # 加上 is_actual=True，跳过缩放，直接将后台识图坐标发送给窗口
-                PCAutomation.click(cx, cy, is_actual=True)
+                click(cx, cy, is_actual=True)
 
             time.sleep(6)
             combat_prep(15)
