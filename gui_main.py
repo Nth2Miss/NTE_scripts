@@ -645,6 +645,15 @@ class MainWindow(FluentWindow):
             # 连接成功，使用 FluentWidgets 内置方法跳转到控制台
             self.switchTo(self.homeInterface)
 
+            # --- 在后台静默预加载 OCR 模型 ---
+            # 定义一个简单的后台任务
+            def preload_task():
+                from utils.tools import OCRManager
+                OCRManager.get_reader()
+
+            # 启动静默加载线程
+            threading.Thread(target=preload_task, daemon=True).start()
+
     def closeEvent(self, event):
         w = MessageBox('确认退出', '确定要关闭程序吗？', self)
         w.yesButton.setText('确定')

@@ -1,0 +1,17 @@
+# GUI 框架与组件
+PyQt6>=6.4.0
+PyQt6-Fluent-Widgets>=1.6.0
+
+# 图像处理与矩阵运算
+opencv-python>=4.8.0
+numpy>=1.24.0
+
+# Windows 底层控制与进程管理
+pywin32>=306
+psutil>=5.9.0
+
+# 系统通知
+plyer>=2.1.0
+
+# 打包工具
+pyinstaller>=6.3.0

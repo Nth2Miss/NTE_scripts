@@ -2,6 +2,7 @@ import time
 import random
 import os
 import json
+import re
 from typing import Optional, Dict, Any
 
 import cv2
@@ -13,6 +14,9 @@ import win32api
 import win32process
 import ctypes
 import psutil
+import easyocr
+import numpy as np
+import threading
 
 # ============================================
 # 全局运行控制与窗口句柄
@@ -21,6 +25,9 @@ _IS_RUNNING = True
 TARGET_PROCESS_NAME = "HTGame.exe"  # 游戏窗口进程
 _TARGET_HWND = None  # 现在存放的是 Win32 的窗口句柄 (HWND)
 
+# EasyOCR 识别器
+_READER_LOCK = threading.Lock()
+_READER = None
 
 class StopScriptException(Exception): pass
 
@@ -117,7 +124,6 @@ def find_game_window():
     if hwnds:
         _TARGET_HWND = hwnds[0]
         real_title = win32gui.GetWindowText(_TARGET_HWND)
-        # print(f"[*] 通过进程 {TARGET_PROCESS_NAME} 锁定成功！游戏真实标题是: '{real_title}'")
         print(f"[*] 通过进程 {TARGET_PROCESS_NAME} 锁定成功！")
         return _TARGET_HWND
 
@@ -146,8 +152,8 @@ def init_resolution():
 
 def adapt_coord(x: int, y: int):
     """
-    【重要修改】后台发包只需要“相对于窗口客户区”的内部坐标。
-    所以这里只做缩放，不再加上窗口在屏幕上的绝对坐标 (left, top)。
+    后台发包只需要“相对于窗口客户区”的内部坐标。
+    只做缩放，不再加上窗口在屏幕上的绝对坐标。
     """
     if not RESOLUTION_CONFIG["curr_width"] or not RESOLUTION_CONFIG["curr_height"]:
         return x, y
@@ -158,6 +164,15 @@ def adapt_coord(x: int, y: int):
     rel_x = int(x * scale_x)
     rel_y = int(y * scale_y)
     return rel_x, rel_y
+
+
+def adapt_region(x1: int, y1: int, x2: int, y2: int):
+    """
+    将 1920x1080 基准下的矩形区域换算为当前窗口客户区的实际区域
+    """
+    rx1, ry1 = adapt_coord(x1, y1)
+    rx2, ry2 = adapt_coord(x2, y2)
+    return min(rx1, rx2), min(ry1, ry2), max(rx1, rx2), max(ry1, ry2)
 
 
 # ============================================
@@ -261,7 +276,7 @@ class PCAutomation:
             print(f"点击[{mode_str}]: 逻辑({x}, {y}) -> 客户区({rel_x}, {rel_y})")
 
     def send_key(self, key: str, show_log: bool = True):
-        """纯后台按键（用于 F键交互、空格跳跃/钓鱼等）"""
+        """纯后台按键"""
         hwnd = _TARGET_HWND
         if not hwnd: return
 
@@ -316,6 +331,41 @@ class ImageMatcher:
             "center_point": (cx, cy) if is_match else None
         }
 
+
+# ============================================
+# OCR 模块 (基于 EasyOCR)
+# ============================================
+class OCRManager:
+    @staticmethod
+    def get_reader():
+        global _READER
+        # 使用线程锁，确保只有一个线程在执行初始化
+        with _READER_LOCK:
+            if _READER is None:
+                try:
+                    print(">>> 正在初始化 EasyOCR 模型...")
+                    # 可以在这里增加更多配置
+                    _READER = easyocr.Reader(['en'], gpu=False)
+                    print(">>> EasyOCR 模型加载成功")
+                except Exception as e:
+                    print(f"❌ OCR 预加载失败: {e}")
+                    # 确保加载失败后不会导致后续程序崩溃，只是返回 None
+                    _READER = None
+        return _READER
+
+    @staticmethod
+    def get_text_from_region(region_coords: tuple) -> str:
+        screen = PCAutomation.capture_screen()
+        if screen is None: return ""
+        rx1, ry1, rx2, ry2 = adapt_region(*region_coords)
+        crop = screen[ry1:ry2, rx1:rx2]
+        if crop.size == 0: return ""
+        try:
+            reader = OCRManager.get_reader()
+            results = reader.readtext(crop, detail=0)
+            return " ".join(results).strip()
+        except Exception as e:
+            print(f"EasyOCR 识别异常: {e}"); return ""
 
 # ============================================
 # 便捷高层 API

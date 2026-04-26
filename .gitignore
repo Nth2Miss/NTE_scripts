@@ -11,6 +11,11 @@
 
 # 忽略的文件夹
 /.idea/
+/build/
+/dist/
+
 /nogui
 /test
+
+config.json
 
