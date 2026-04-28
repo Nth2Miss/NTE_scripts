@@ -14,9 +14,9 @@ import win32api
 import win32process
 import ctypes
 import psutil
-import easyocr
-import numpy as np
 import threading
+import pytesseract
+from PIL import Image
 
 # ============================================
 # 全局运行控制与窗口句柄
@@ -24,10 +24,6 @@ import threading
 _IS_RUNNING = True
 TARGET_PROCESS_NAME = "HTGame.exe"  # 游戏窗口进程
 _TARGET_HWND = None  # 现在存放的是 Win32 的窗口句柄 (HWND)
-
-# EasyOCR 识别器
-_READER_LOCK = threading.Lock()
-_READER = None
 
 class StopScriptException(Exception): pass
 
@@ -213,6 +209,20 @@ class PCAutomation:
         win32gui.ReleaseDC(hwnd, hwndDC)
         return img_cv
 
+    def take_screenshot(self, region: Optional[tuple] = None):  #
+        """
+        获取截图，可选裁剪区域 (x1, y1, x2, y2)
+        """
+        full_img = self.capture_screen()
+        if full_img is None: return None
+        if region:
+            x1, y1, x2, y2 = region
+            # 自动适配分辨率
+            rx1, ry1 = adapt_coord(x1, y1)
+            rx2, ry2 = adapt_coord(x2, y2)
+            return full_img[ry1:ry2, rx1:rx2]
+        return full_img
+
     @staticmethod
     def set_foreground():
         """强制将游戏窗口带到最前台并激活"""
@@ -232,7 +242,7 @@ class PCAutomation:
             except Exception as e:
                 print(f"⚠️ 无法置顶窗口: {e}")
 
-    def click(self, x: int, y: int, is_actual: bool = False, move: bool = False, show_log: bool = True):
+    def click(self, x: int, y: int, is_actual: bool = False, move: bool = False, show_log: bool = False):
         """统一鼠标点击接口"""
         hwnd = _TARGET_HWND
         if not hwnd: return
@@ -275,7 +285,7 @@ class PCAutomation:
             mode_str = "物理闪现" if move else "纯后台"
             print(f"点击[{mode_str}]: 逻辑({x}, {y}) -> 客户区({rel_x}, {rel_y})")
 
-    def send_key(self, key: str, show_log: bool = True):
+    def send_key(self, key: str, show_log: bool = False):
         """纯后台按键"""
         hwnd = _TARGET_HWND
         if not hwnd: return
@@ -333,39 +343,46 @@ class ImageMatcher:
 
 
 # ============================================
-# OCR 模块 (基于 EasyOCR)
+# OCR 模块
 # ============================================
 class OCRManager:
-    @staticmethod
-    def get_reader():
-        global _READER
-        # 使用线程锁，确保只有一个线程在执行初始化
-        with _READER_LOCK:
-            if _READER is None:
-                try:
-                    print(">>> 正在初始化 EasyOCR 模型...")
-                    # 可以在这里增加更多配置
-                    _READER = easyocr.Reader(['en'], gpu=False)
-                    print(">>> EasyOCR 模型加载成功")
-                except Exception as e:
-                    print(f"❌ OCR 预加载失败: {e}")
-                    # 确保加载失败后不会导致后续程序崩溃，只是返回 None
-                    _READER = None
-        return _READER
+    _initialized = False
 
-    @staticmethod
-    def get_text_from_region(region_coords: tuple) -> str:
-        screen = PCAutomation.capture_screen()
-        if screen is None: return ""
-        rx1, ry1, rx2, ry2 = adapt_region(*region_coords)
-        crop = screen[ry1:ry2, rx1:rx2]
-        if crop.size == 0: return ""
+    @classmethod
+    def init_tesseract(cls):
+        if not cls._initialized:
+            # 动态定位项目目录下的 Tesseract
+            tess_path = os.path.join(PROJECT_ROOT, "bin", "Tesseract-OCR", "tesseract.exe")
+            pytesseract.pytesseract.tesseract_cmd = tess_path
+            cls._initialized = True
+
+    @classmethod
+    def get_text_from_region(cls, region: tuple, config: str = "--psm 6"):
+        """
+        :param config: 默认为 psm 6 (单个文本块)，如果识别单行可以用 psm 7
+        """
+        cls.init_tesseract()
+        pc = PCAutomation()
+        img = pc.take_screenshot(region)
+        if img is None: return ""
+
+        # --- 通用预处理：提升识别率但保持文字特征 ---
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        # 放大 2 倍对 Tesseract 很有帮助
+        upscaled = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+
+        # 即使要识别文字，二值化也能有效去除背景噪声
+        _, binary = cv2.threshold(upscaled, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+
+        pil_img = Image.fromarray(binary)
+
         try:
-            reader = OCRManager.get_reader()
-            results = reader.readtext(crop, detail=0)
-            return " ".join(results).strip()
+            # 使用传入的 config，外部不传则使用默认
+            text = pytesseract.image_to_string(pil_img, config=config, lang='chi_sim+eng')
+            return text.strip()
         except Exception as e:
-            print(f"EasyOCR 识别异常: {e}"); return ""
+            print(f"Tesseract 识别异常: {e}")
+            return ""
 
 # ============================================
 # 便捷高层 API

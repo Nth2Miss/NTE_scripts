@@ -13,6 +13,8 @@
 /.idea/
 /build/
 /dist/
+/DEV/
+/Python/
 
 /nogui
 /test

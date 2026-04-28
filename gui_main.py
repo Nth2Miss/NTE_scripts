@@ -15,29 +15,36 @@ from qfluentwidgets import (
     MessageBox, SettingCard, ExpandSettingCard, ComboBox
 )
 
+import ctypes
+try:
+    # 与启动器不同的 ID，让主程序独立显示
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("NTE.Main.Yihuan.v1")
+except:
+    pass
 
 # ============================================
-# 1. scripts 目录路径自动定位
+# 1. 路径自动定位与环境初始化
 # ============================================
-def find_project_root():
-    current_path = os.path.dirname(os.path.abspath(__file__))
-    for i in range(4):
-        if os.path.exists(os.path.join(current_path, "scripts")):
-            return current_path
-        parent = os.path.dirname(current_path)
-        if parent == current_path: break
-        current_path = parent
+def get_root_path():
+    # Nuitka 或 PyInstaller 编译后的环境
+    if getattr(sys, 'frozen', False):
+        # sys.executable 指向 .exe 的完整路径
+        return os.path.dirname(os.path.abspath(sys.executable))
+    # 源码开发环境
     return os.path.dirname(os.path.abspath(__file__))
 
+PROJECT_ROOT = get_root_path()
 
-PROJECT_ROOT = find_project_root()
+# 将工作目录切换至程序根目录，解决所有相对路径问题
+os.chdir(PROJECT_ROOT)
+
+# 确保项目根目录在模块搜索路径中
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 try:
     import utils.tools
     from utils.tools import set_running_state, StopScriptException
-
     APP_CONFIG = utils.tools.config_mgr
 except ImportError as e:
     print(f"导入错误: {e}")
@@ -611,7 +618,9 @@ class MainWindow(FluentWindow):
         super().__init__()
         self.setProperty("game_connected", False)
         self.setWindowTitle('异环 自动化平台')
-        self.setWindowIcon(QIcon('assets/logo.png'))
+        icon_path = os.path.join(PROJECT_ROOT, 'assets', 'logo.png')
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
         self.resize(900, 700)
 
         # 1. 连接应用
@@ -644,15 +653,6 @@ class MainWindow(FluentWindow):
         if self.connectInterface.try_connect(silent_fail=True):
             # 连接成功，使用 FluentWidgets 内置方法跳转到控制台
             self.switchTo(self.homeInterface)
-
-            # --- 在后台静默预加载 OCR 模型 ---
-            # 定义一个简单的后台任务
-            def preload_task():
-                from utils.tools import OCRManager
-                OCRManager.get_reader()
-
-            # 启动静默加载线程
-            threading.Thread(target=preload_task, daemon=True).start()
 
     def closeEvent(self, event):
         w = MessageBox('确认退出', '确定要关闭程序吗？', self)
