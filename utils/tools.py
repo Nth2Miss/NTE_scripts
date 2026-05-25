@@ -35,6 +35,15 @@ _IS_RUNNING = True
 TARGET_PROCESS_NAME = "HTGame.exe"  # 游戏窗口进程
 _TARGET_HWND = None  # 现在存放的是 Win32 的窗口句柄 (HWND)
 
+# 配置分辨率
+RESOLUTION_CONFIG = {
+    "base_width": 2560,
+    "base_height": 1440,
+    "curr_width": None,
+    "curr_height": None
+}
+
+
 class StopScriptException(Exception): pass
 
 
@@ -134,14 +143,6 @@ def find_game_window():
         return _TARGET_HWND
 
     return None
-
-
-RESOLUTION_CONFIG = {
-    "base_width": 1920,
-    "base_height": 1080,
-    "curr_width": None,
-    "curr_height": None
-}
 
 
 def init_resolution():
@@ -331,17 +332,45 @@ class PCAutomation:
 class ImageMatcher:
     @staticmethod
     def compare_template(screen_bgr, template_path: str, threshold: float = 0.8) -> Dict:
-        """模板匹配"""
+        """模板匹配（支持分辨率自适应缩放）"""
         template_bgr = cv2.imread(template_path)
         if template_bgr is None:
             raise ValueError(f"无法读取模板图片: {template_path}")
 
+        # 1. 获取当前分辨率与基础分辨率
+        curr_w = RESOLUTION_CONFIG.get("curr_width")
+        curr_h = RESOLUTION_CONFIG.get("curr_height")
+        # 默认回退到 2K 分辨率，确保字典中没有 base_width 时也能正常工作
+        base_w = RESOLUTION_CONFIG.get("base_width", 2560)
+        base_h = RESOLUTION_CONFIG.get("base_height", 1440)
+
+        # 2. 如果成功获取了当前窗口大小，且与基础分辨率不同，则执行等比例缩放
+        if curr_w and curr_h and (curr_w != base_w or curr_h != base_h):
+            scale_x = curr_w / base_w
+            scale_y = curr_h / base_h
+
+            new_w = max(1, int(template_bgr.shape[1] * scale_x))
+            new_h = max(1, int(template_bgr.shape[0] * scale_y))
+
+            # 智能选择插值算法：
+            # - 放大图片 (1080p -> 2K) 使用 INTER_LINEAR，边缘平滑
+            # - 缩小图片 (2K -> 1080p) 使用 INTER_AREA，防止像素特征丢失
+            if scale_x > 1.0 or scale_y > 1.0:
+                interp = cv2.INTER_LINEAR
+            else:
+                interp = cv2.INTER_AREA
+
+            template_bgr = cv2.resize(template_bgr, (new_w, new_h), interpolation=interp)
+
+        # 3. 统一转换为灰度图后执行底层匹配
         res = cv2.matchTemplate(cv2.cvtColor(screen_bgr, cv2.COLOR_BGR2GRAY),
                                 cv2.cvtColor(template_bgr, cv2.COLOR_BGR2GRAY),
                                 cv2.TM_CCOEFF_NORMED)
+
         _, max_val, _, max_loc = cv2.minMaxLoc(res)
         is_match = max_val >= threshold
 
+        # 4. 计算匹配到的中心点坐标
         cx = max_loc[0] + template_bgr.shape[1] // 2
         cy = max_loc[1] + template_bgr.shape[0] // 2
 
@@ -405,7 +434,7 @@ def random_sleep(min_time: float, max_time: float = None, variation: float = 0.1
         base_variation = min_time * variation
         sleep_time = max(0.3, min_time + random.uniform(-base_variation, base_variation * 2))
 
-    print(f"等待 {sleep_time:.2f} 秒")
+    status_notifier.log(f"等待 {sleep_time:.2f} 秒...")
     smart_sleep(sleep_time)
 
 
@@ -433,3 +462,29 @@ def wait_until_match(template_path: str, timeout: int = 60, raise_err: bool = Tr
     if raise_err:
         raise TimeoutException(f"等待超时：{timeout}秒内未找到目标 {os.path.basename(template_path)}")
     return None
+
+
+# ============================================
+# 统一状态与日志分发器（用于主页表格与侧边栏日志分流）
+# ============================================
+class ScriptStatusSignaler:
+    def __init__(self):
+        self.callback = None
+        self.log_callback = None
+
+    def update(self, current_round: int, step_desc: str, total_round: int = None):
+        """同步更新主界面单行看板表格的状态"""
+        if self.callback:
+            self.callback(current_round, step_desc, total_round)
+        # 步骤也会自动在侧边栏详细日志中同步写一份
+        self.log(f"[步骤] {step_desc}")
+
+    def log(self, text: str):
+        """同步将详细调试信息追加到侧边栏日志面板"""
+        if self.log_callback:
+            self.log_callback(text)
+        else:
+            print(text)
+
+# 全局单例，供所有自动化业务脚本和GUI导入共享
+status_notifier = ScriptStatusSignaler()

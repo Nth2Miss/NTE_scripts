@@ -5,14 +5,15 @@ import os
 import threading
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject, pyqtSlot, QMetaObject, Q_ARG, QTimer
 from PyQt6.QtWidgets import (
-    QHBoxLayout, QVBoxLayout, QWidget, QApplication
+    QHBoxLayout, QVBoxLayout, QWidget, QApplication,
+    QTableWidgetItem, QHeaderView
 )
 from PyQt6.QtGui import QFont, QIcon
 from qfluentwidgets import (
     FluentWindow, SubtitleLabel, BodyLabel, PrimaryPushButton, PushButton,
     TextEdit, FluentIcon as FIF, InfoBar, InfoBarPosition, ProgressBar,
     NavigationItemPosition, ScrollArea, LineEdit, SwitchButton, PasswordLineEdit,
-    MessageBox, SettingCard, ExpandSettingCard, ComboBox
+    MessageBox, SettingCard, ExpandSettingCard, ComboBox, TableWidget, CardWidget
 )
 
 import ctypes
@@ -131,7 +132,65 @@ class Worker(QThread):
 
 
 # ============================================
-# 3. 连接管理页面
+# 3. 侧边栏独立的日志面板 (LogInterface)
+# ============================================
+class LogInterface(ScrollArea):
+    def __init__(self, parent=None):
+        super().__init__(parent=parent)
+        self.setObjectName('logInterface')
+        self.scrollWidget = QWidget()
+        self.vBoxLayout = QVBoxLayout(self.scrollWidget)
+
+        self.setWidget(self.scrollWidget)
+        self.setWidgetResizable(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        self.vBoxLayout.setContentsMargins(30, 30, 30, 30)
+        self.vBoxLayout.setSpacing(20)
+
+        self.titleLabel = SubtitleLabel('详细运行日志', self.scrollWidget)
+        self.titleLabel.setFont(QFont("Microsoft YaHei", 18, QFont.Weight.Bold))
+        self.vBoxLayout.addWidget(self.titleLabel)
+
+        self.logCard = CardWidget(self.scrollWidget)
+        self.cardLayout = QVBoxLayout(self.logCard)
+        self.cardLayout.setContentsMargins(15, 15, 15, 15)
+
+        self.logText = TextEdit(self.logCard)
+        self.logText.setReadOnly(True)
+        self.logText.setFixedHeight(450)
+        self.cardLayout.addWidget(self.logText)
+
+        self.btnLayout = QHBoxLayout()
+        self.clearBtn = PushButton("清空日志台", self.logCard)
+        self.clearBtn.setIcon(FIF.DELETE)
+        self.clearBtn.clicked.connect(self.logText.clear)
+        self.btnLayout.addStretch(1)
+        self.btnLayout.addWidget(self.clearBtn)
+        self.cardLayout.addLayout(self.btnLayout)
+
+        self.vBoxLayout.addWidget(self.logCard)
+        self.vBoxLayout.addStretch(1)
+
+    @pyqtSlot(str)
+    def append_log(self, text):
+        """接收日志并自动渲染 HTML 染色效果"""
+        current_time = time.strftime("%H:%M:%S", time.localtime())
+        cleaned_text = text.strip()
+
+        if "✅" in cleaned_text or "成功" in cleaned_text:
+            html = f'<font color="#0F7B42">[{current_time}] {cleaned_text}</font>'
+        elif "❌" in cleaned_text or "错误" in cleaned_text or "异常" in cleaned_text:
+            html = f'<font color="#851614"><b>[{current_time}] {cleaned_text}</b></font>'
+        elif "[步骤]" in cleaned_text:
+            html = f'<font color="#0066CC">[{current_time}] {cleaned_text}</font>'
+        else:
+            html = f'<font color="#777777">[{current_time}]</font> <font color="#333333">{cleaned_text}</font>'
+        self.logText.append(html)
+
+
+# ============================================
+# 4. 连接管理页面
 # ============================================
 class ConnectInterface(ScrollArea):
     def __init__(self, parent=None):
@@ -200,7 +259,9 @@ class HomeInterface(ScrollArea):
         super().__init__(parent=parent)
         self.setObjectName('homeInterface')
         self.worker = None
-        self.original_stdout = sys.stdout
+        self.start_timestamp = None
+        self.run_timer = QTimer(self)
+        self.run_timer.timeout.connect(self.update_run_time_slot)
 
         self.scrollWidget = QWidget()
         self.vBoxLayout = QVBoxLayout(self.scrollWidget)
@@ -211,9 +272,9 @@ class HomeInterface(ScrollArea):
 
         self.init_ui()
 
-        self.emitting_stream = EmittingStream()
-        self.emitting_stream.textWritten.connect(self.on_log_received)
-        sys.stdout = self.emitting_stream
+        # 绑定表格数据槽
+        from utils.tools import status_notifier
+        status_notifier.callback = self.on_status_updated
 
     def init_ui(self):
         self.vBoxLayout.setContentsMargins(30, 30, 30, 30)
@@ -303,9 +364,9 @@ class HomeInterface(ScrollArea):
         self.stopBtn.setEnabled(False)
         self.stopBtn.clicked.connect(self.stop_script)
 
-        self.clearBtn = PushButton("清空日志", self.scrollWidget)
+        self.clearBtn = PushButton("清空看板", self.scrollWidget)
         self.clearBtn.setIcon(FIF.DELETE)
-        self.clearBtn.clicked.connect(lambda: self.logText.clear())
+        self.clearBtn.clicked.connect(self.clear_table_data)
 
         self.btnLayout.addWidget(self.stopBtn)
         self.btnLayout.addWidget(self.clearBtn)
@@ -316,10 +377,29 @@ class HomeInterface(ScrollArea):
         self.progressBar.hide()
         self.vBoxLayout.addWidget(self.progressBar)
 
-        self.logText = TextEdit(self.scrollWidget)
-        self.logText.setReadOnly(True)
-        self.logText.setFixedHeight(350)
-        self.vBoxLayout.addWidget(self.logText)
+        self.vBoxLayout.addSpacing(15)
+
+        self.tableTitleLabel = BodyLabel('📊 实时运行状态看板', self.scrollWidget)
+        self.tableTitleLabel.setFont(QFont("Microsoft YaHei", 10, QFont.Weight.Bold))
+        self.vBoxLayout.addWidget(self.tableTitleLabel)
+
+        self.statusTable = TableWidget(self.scrollWidget)
+        self.statusTable.setBorderVisible(True)
+        self.statusTable.setBorderRadius(8)
+        self.statusTable.setSelectionMode(TableWidget.SelectionMode.NoSelection)
+        self.statusTable.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+        self.statusTable.setColumnCount(1)
+        self.statusTable.setRowCount(5)
+        self.statusTable.horizontalHeader().hide()
+        self.statusTable.setVerticalHeaderLabels(['运行时长', '当前脚本', '目标轮次', '当前进度', '当前操作步骤'])
+        self.statusTable.verticalHeader().show()
+        self.statusTable.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.statusTable.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.statusTable.setFixedHeight(200)
+
+        self.clear_table_data()
+        self.vBoxLayout.addWidget(self.statusTable)
         self.vBoxLayout.addStretch(1)
 
     def set_debug_visibility(self, visible):
@@ -337,6 +417,34 @@ class HomeInterface(ScrollArea):
             print(">>> 脚本列表已刷新")
         else:
             print(f">>> 找不到 scripts 目录: {scripts_dir}")
+
+    def clear_table_data(self):
+        self.statusTable.setItem(0, 0, QTableWidgetItem("-"))
+        self.statusTable.setItem(1, 0, QTableWidgetItem("-"))
+        self.statusTable.setItem(2, 0, QTableWidgetItem("-"))
+        self.statusTable.setItem(3, 0, QTableWidgetItem("-"))
+        self.statusTable.setItem(4, 0, QTableWidgetItem("就绪 / 未启动"))
+
+    def update_run_time_slot(self):
+        """每秒被 QTimer 触发一次，全自动计算并覆盖刷新表格第 1 行（索引 0）"""
+        if self.start_timestamp is not None:
+            elapsed = int(time.time() - self.start_timestamp)
+            hrs = elapsed // 3600
+            mins = (elapsed % 3600) // 60
+            secs = elapsed % 60
+            time_str = f"{hrs:02d}:{mins:02d}:{secs:02d}"
+            self.statusTable.setItem(0, 0, QTableWidgetItem(time_str))
+
+    def on_status_updated(self, current_round, step_desc, total_round=None):
+        if total_round is not None:
+            self.statusTable.setItem(2, 0, QTableWidgetItem(f"{total_round} 次"))
+        self.statusTable.setItem(3, 0, QTableWidgetItem(f"第 {current_round} 轮"))
+        step_item = QTableWidgetItem(step_desc)
+        if "✅" in step_desc or "成功" in step_desc:
+            step_item.setForeground(Qt.GlobalColor.darkGreen)
+        elif "❌" in step_desc or "错误" in step_desc:
+            step_item.setForeground(Qt.GlobalColor.red)
+        self.statusTable.setItem(4, 0, step_item)
 
     def start_debug_script(self):
         """运行下拉框选中的脚本"""
@@ -356,24 +464,23 @@ class HomeInterface(ScrollArea):
             return
 
         self.toggle_ui(True)
-        self.logText.clear()
+        main_win = self.window()
+        if hasattr(main_win, 'logInterface'):
+            main_win.logInterface.logText.clear()
+
+        # 开始运行时，记录当前时间戳，并启动每秒定时器
+        self.start_timestamp = time.time()
+        self.statusTable.setItem(0, 0, QTableWidgetItem("00:00:00"))
+        self.run_timer.start(1000)
+
+        self.statusTable.setItem(1, 0, QTableWidgetItem(selected_script))
+        self.statusTable.setItem(2, 0, QTableWidgetItem("- 次"))
+        self.statusTable.setItem(3, 0, QTableWidgetItem("准备中..."))
 
         self.worker = Worker(script_path)
         self.worker.finished_signal.connect(self.on_finished)
-        self.worker.error_signal.connect(lambda e: self.show_info("出错", "查看日志获得详细报错", True))
+        self.worker.error_signal.connect(lambda e: self.show_info("出错", "请查看侧边栏日志", True))
         self.worker.start()
-
-    # 同时你需要稍微修改一下 toggle_ui，让运行的时候把调试按钮也禁用掉，防止重复点击
-    def toggle_ui(self, running):
-        self.runShopBtn.setEnabled(not running)
-        self.runDebugBtn.setEnabled(not running)  # <-- 新增：禁用调试运行按钮
-        self.stopBtn.setEnabled(running)
-        if running:
-            self.progressBar.show()
-            self.progressBar.setRange(0, 0)
-        else:
-            self.progressBar.hide()
-
 
     def start_shop_script(self):
         # 强制检查应用连接状态
@@ -388,11 +495,22 @@ class HomeInterface(ScrollArea):
             return
 
         self.toggle_ui(True)
-        self.logText.clear()
+        main_win = self.window()
+        if hasattr(main_win, 'logInterface'):
+            main_win.logInterface.logText.clear()
+
+        # 开始运行时，记录当前时间戳，并启动每秒定时器
+        self.start_timestamp = time.time()
+        self.statusTable.setItem(0, 0, QTableWidgetItem("00:00:00"))
+        self.run_timer.start(1000)
+
+        self.statusTable.setItem(1, 0, QTableWidgetItem("shop_special.py"))
+        self.statusTable.setItem(2, 0, QTableWidgetItem("- 次"))
+        self.statusTable.setItem(3, 0, QTableWidgetItem("准备中..."))
 
         self.worker = Worker(script_path)
         self.worker.finished_signal.connect(self.on_finished)
-        self.worker.error_signal.connect(lambda e: self.show_info("出错", "查看日志获得详细报错", True))
+        self.worker.error_signal.connect(lambda e: self.show_info("出错", "请查看侧边栏日志", True))
         self.worker.start()
 
     def stop_script(self):
@@ -404,6 +522,9 @@ class HomeInterface(ScrollArea):
     def on_finished(self):
         self.toggle_ui(False)
         self.stopBtn.setText("停止运行")
+        self.run_timer.stop()
+        self.start_timestamp = None
+        self.clear_table_data()
         self.show_info("结束", "任务已停止")
 
     def reset_shop_config(self):
@@ -412,6 +533,9 @@ class HomeInterface(ScrollArea):
 
     def toggle_ui(self, running):
         self.runShopBtn.setEnabled(not running)
+        self.runDebugBtn.setEnabled(not running)
+        self.scriptComboBox.setEnabled(not running)
+        self.refreshBtn.setEnabled(not running)
         self.stopBtn.setEnabled(running)
         if running:
             self.progressBar.show()
@@ -419,19 +543,13 @@ class HomeInterface(ScrollArea):
         else:
             self.progressBar.hide()
 
-    def on_log_received(self, text):
-        cursor = self.logText.textCursor()
-        cursor.movePosition(cursor.MoveOperation.End)
-        cursor.insertText(text)
-        self.logText.setTextCursor(cursor)
-
     def show_info(self, title, content, is_error=False):
         func = InfoBar.error if is_error else InfoBar.success
         func(title=title, content=content, position=InfoBarPosition.TOP_RIGHT, parent=self, duration=3000)
 
     def closeEvent(self, event):
-        sys.stdout = self.original_stdout
-        if self.worker: self.worker.stop()
+        if self.worker:
+            self.worker.stop()
         super().closeEvent(event)
 
 
@@ -541,6 +659,13 @@ class OtherSettingInterface(ScrollArea):
             StopScriptException = utils.tools.StopScriptException
             APP_CONFIG = utils.tools.config_mgr
 
+            # 重新绑定分发单例的插头，防止断连
+            main_win = self.window()
+            if main_win:
+                utils.tools.status_notifier.callback = main_win.homeInterface.on_status_updated
+                if hasattr(main_win, 'logInterface'):
+                    utils.tools.status_notifier.log_callback = main_win.logInterface.append_log
+
             InfoBar.success("操作成功", "Utils 已重新加载", position=InfoBarPosition.TOP_RIGHT, parent=self)
             print("=== Utils 模块重载成功 ===")
         except Exception as e:
@@ -621,7 +746,7 @@ class MainWindow(FluentWindow):
         icon_path = os.path.join(PROJECT_ROOT, 'assets', 'logo.png')
         if os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
-        self.resize(900, 700)
+        self.resize(950, 720)
 
         # 1. 连接应用
         self.connectInterface = ConnectInterface(self)
@@ -638,7 +763,24 @@ class MainWindow(FluentWindow):
         self.otherSettingInterface.setObjectName('otherSettingInterface')
         self.addSubInterface(self.otherSettingInterface, FIF.SETTING, '其他设置')
 
-        # 4. 基础设置页面
+        # 4. 实例化详细日志面板
+        self.logInterface = LogInterface(self)
+        self.logInterface.setObjectName('logInterface')
+
+        # 同时打通通知单例的 log 数据流向
+        from utils.tools import status_notifier
+        status_notifier.log_callback = self.logInterface.append_log
+
+        # 对系统标准的 print 劫持，加入详细日志面板
+        self.original_stdout = sys.stdout
+        self.emitting_stream = EmittingStream()
+        self.emitting_stream.textWritten.connect(self.logInterface.append_log)
+        sys.stdout = self.emitting_stream
+
+        # 锁定日志面板在“设置”上方 (NavigationItemPosition.BOTTOM)
+        self.addSubInterface(self.logInterface, FIF.DOCUMENT, '详细日志', NavigationItemPosition.BOTTOM)
+
+        # 5. 基础设置页面
         self.settingInterface = SettingInterface(self)
         self.settingInterface.setObjectName('settingInterface')
         self.addSubInterface(self.settingInterface, FIF.SETTING, '设置', NavigationItemPosition.BOTTOM)
@@ -659,6 +801,7 @@ class MainWindow(FluentWindow):
         w.yesButton.setText('确定')
         w.cancelButton.setText('取消')
         if w.exec():
+            sys.stdout = self.original_stdout  # 关闭前恢复系统标准流
             event.accept()
         else:
             event.ignore()
