@@ -1,8 +1,0 @@
-{
-    "email_enabled": false,
-    "email_smtp": "smtp.qq.com",
-    "email_port": "465",
-    "email_sender": "1226666897@qq.com",
-    "email_pwd": "xlymdvmxwaqjjbdi",
-    "email_receiver": "1226666897@qq.com"
-}
