@@ -13,10 +13,20 @@ import win32con
 import win32api
 import win32process
 import ctypes
+import platform
 import psutil
 import threading
 import pytesseract
 from PIL import Image
+
+# 强制开启系统的 DPI 感知，获取真实的物理分辨率
+try:
+    if platform.release() == '10' or platform.release() == '11':
+        ctypes.windll.shcore.SetProcessDpiAwareness(2) # Per Monitor DPI Aware
+    else:
+        ctypes.windll.user32.SetProcessDPIAware()
+except Exception as e:
+    print(f"⚠️ 设置 DPI 感知失败: {e}")
 
 # ============================================
 # 全局运行控制与窗口句柄
