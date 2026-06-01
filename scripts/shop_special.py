@@ -27,17 +27,18 @@ os.chdir(PROJECT_ROOT)
 TEMPLATES = {
     # 使用 PROJECT_ROOT 拼接绝对路径，确保 cv2.imread 能够读取成功
     "start_business": os.path.normpath(os.path.join(PROJECT_ROOT, "templates", "start_business.png")),
+    "1-1": os.path.normpath(os.path.join(PROJECT_ROOT, "templates", "1-1.png")),
 }
 
 COORDS = {
-    "level_1_1": (161, 393),  # 关卡1-1
-    "start_btn": (1720, 1005),  # 开始按钮
-    "100T": (86, 444),  # 锤子
-    "quit": (41, 44),  # 退出
-    "claim": (1162, 834),  # 领取
+    "level_1_1": (215, 524),  # 关卡1-1
+    "start_btn": (2293, 1340),  # 开始按钮
+    "100T": (115, 592),  # 锤子
+    "quit": (55, 59),  # 退出
+    "claim": (1549, 1112),  # 领取
 
-    # ocr 区域
-    "progress_region": (1756, 99, 1865, 137)
+    # ocr 区域 (x1, y1, x2, y2)
+    "progress_region": (2341, 132, 2487, 183)
 }
 # =================================================================
 
@@ -86,7 +87,7 @@ def combat_prep(run_count):
     time.sleep(1)
     click(*COORDS["claim"])
     status_notifier.update(run_count, "✅ 结算 领取奖励成功")
-    time.sleep(5)
+    time.sleep(1)
 
 
 def main():
@@ -94,26 +95,38 @@ def main():
     pc.set_foreground()
     time.sleep(2)
 
-    # 标记是否为第一次运行
-    is_first_run = True
     run_count = 0
+
+    # 1. 后台发送 F 键
+    status_notifier.update(run_count, "后台按 F 键")
+    pc.send_key('F')
+    time.sleep(1)
 
     while True:
         run_count += 1
-        # 1. 后台发送 F 键 (每次循环都需要)
-        status_notifier.update(run_count, "后台按 F 键")
-        pc.send_key('F')
-        time.sleep(2)
+        # 1.5 在 (174, 393, 251, 850) 区域里按方向滑动
+        # status_notifier.update(run_count, "区域内滑动(direction='up')")
+        # pc.swipe_in_region((174, 393, 251, 850), direction='up', duration=1.5)
+        # time.sleep(1)
 
-        # 2. 只有第一次运行时，才需要点击选择 1-1 关卡
-        if is_first_run:
-            status_notifier.update(run_count, "后台点击 关卡1-1")
-            click(*COORDS["level_1_1"])
-            time.sleep(1.5)
-            # 修改标记，后续循环将跳过此判断体
-            is_first_run = False
+        # 1.5 滚动到最上
+        status_notifier.update(run_count, "鼠标滚轮滚动至最上")
+        # times=50 表示连续快速向上滚动 50 次
+        pc.scroll(250, 500, delta=120, times=50)
+        time.sleep(0.3)
+
+        # 2. 识图寻找 1-1 关卡并点击
+        status_notifier.update(run_count, "开始检测模板: 1-1.png")
+        level_1_1_result = wait_until_match(TEMPLATES["1-1"], timeout=10, threshold=0.8)
+        
+        if level_1_1_result and level_1_1_result.get("is_match"):
+            cx, cy = level_1_1_result["center_point"]
+            status_notifier.update(run_count, f"1-1 识图成功！准备点击坐标: ({cx}, {cy})")
+            click(cx, cy)
         else:
-            status_notifier.update(run_count, "跳过关卡选择，直接检测开始模板...")
+            status_notifier.update(run_count, "未检测到 1-1 关卡，尝试继续后续流程...")
+            
+        time.sleep(0.3)
 
         # 3. 后台静默识图 (后续循环按完 F 后直接进入这里)
         status_notifier.update(run_count, "开始检测模板: start_business.png")
@@ -125,8 +138,7 @@ def main():
                 cx, cy = start_business_result["center_point"]
                 status_notifier.update(run_count, f"识图成功！准备点击坐标: ({cx}, {cy})")
 
-                # 加上 is_actual=True，跳过缩放，直接将后台识图坐标发送给窗口
-                click(cx, cy, is_actual=True)
+                click(cx, cy)
             else:
                 status_notifier.update(run_count, "未检测到开始按钮，尝试继续后续流程...")
 
@@ -137,12 +149,9 @@ def main():
             combat_prep(run_count)
 
             status_notifier.update(run_count, "✅ 单轮任务完成，准备开始下一轮...")
-            time.sleep(2)
 
         except Exception as e:
             status_notifier.update(run_count, f"❌ 运行出错: {e}")
-            # 如果出现异常，建议重置 is_first_run 以便重新开始流程
-            is_first_run = True
             time.sleep(5)
             continue
 

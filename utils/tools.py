@@ -175,7 +175,7 @@ def adapt_coord(x: int, y: int):
 
 def adapt_region(x1: int, y1: int, x2: int, y2: int):
     """
-    将 1920x1080 基准下的矩形区域换算为当前窗口客户区的实际区域
+    将 2560x1440 基准下的矩形区域换算为当前窗口客户区的实际区域
     """
     rx1, ry1 = adapt_coord(x1, y1)
     rx2, ry2 = adapt_coord(x2, y2)
@@ -253,17 +253,13 @@ class PCAutomation:
             except Exception as e:
                 print(f"⚠️ 无法置顶窗口: {e}")
 
-    def click(self, x: int, y: int, is_actual: bool = False, move: bool = False, show_log: bool = False):
+    def click(self, x: int, y: int, move: bool = False, show_log: bool = False):
         """统一鼠标点击接口"""
         hwnd = _TARGET_HWND
         if not hwnd: return
 
-        if not is_actual:
-            rel_x, rel_y = adapt_coord(x, y)
-        else:
-            rel_x, rel_y = int(x), int(y)
+        rel_x, rel_y = adapt_coord(x, y)
 
-        lparam = win32api.MAKELONG(rel_x, rel_y)
         original_pos = None
 
         win32gui.SendMessage(hwnd, win32con.WM_ACTIVATE, win32con.WA_ACTIVE, 0)
@@ -273,14 +269,24 @@ class PCAutomation:
                 original_pos = win32api.GetCursorPos()
                 screen_x, screen_y = win32gui.ClientToScreen(hwnd, (rel_x, rel_y))
                 win32api.SetCursorPos((screen_x, screen_y))
-                time.sleep(random.uniform(0.01, 0.015))
-
-            win32gui.PostMessage(hwnd, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, lparam)
-            time.sleep(random.uniform(0.01, 0.02))
-            win32gui.PostMessage(hwnd, win32con.WM_LBUTTONUP, 0, lparam)
-
-            if move:
-                time.sleep(0.03)
+                # 增加停顿时间，让游戏引擎充分意识到鼠标已停稳
+                time.sleep(0.05)
+                
+                # 完全使用物理级硬件输入，避免 PostMessage 在恢复原坐标时产生拖拽误判
+                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                time.sleep(random.uniform(0.02, 0.05))
+                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+                
+                # 关键：松手后必须停顿，防止瞬间恢复原位置被引擎算作手势滑动
+                time.sleep(0.1)
+            else:
+                lparam = win32api.MAKELONG(rel_x, rel_y)
+                # 纯后台时也要先发送 MOUSEMOVE 确保坐标正确
+                win32gui.PostMessage(hwnd, win32con.WM_MOUSEMOVE, 0, lparam)
+                time.sleep(0.01)
+                win32gui.PostMessage(hwnd, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, lparam)
+                time.sleep(random.uniform(0.02, 0.05))
+                win32gui.PostMessage(hwnd, win32con.WM_LBUTTONUP, 0, lparam)
 
         except Exception as e:
             print(f"点击异常: {e}")
@@ -295,6 +301,173 @@ class PCAutomation:
         if show_log:
             mode_str = "物理闪现" if move else "纯后台"
             print(f"点击[{mode_str}]: 逻辑({x}, {y}) -> 客户区({rel_x}, {rel_y})")
+
+    def swipe(self, x1: int, y1: int, x2: int, y2: int, duration: float = 0.5, move: bool = True, show_log: bool = False):
+        """统一鼠标拖拽/滑动接口"""
+        hwnd = _TARGET_HWND
+        if not hwnd: return
+
+        rel_x1, rel_y1 = adapt_coord(x1, y1)
+        rel_x2, rel_y2 = adapt_coord(x2, y2)
+        
+        original_pos = None
+
+        win32gui.SendMessage(hwnd, win32con.WM_ACTIVATE, win32con.WA_ACTIVE, 0)
+
+        try:
+            if move:
+                # 纯物理硬件级模拟（针对模拟器/游戏引擎拦截了底层输入的情况）
+                original_pos = win32api.GetCursorPos()
+                screen_x1, screen_y1 = win32gui.ClientToScreen(hwnd, (rel_x1, rel_y1))
+                
+                sw = win32api.GetSystemMetrics(0)
+                sh = win32api.GetSystemMetrics(1)
+                
+                mx1 = int(screen_x1 * 65535 / sw)
+                my1 = int(screen_y1 * 65535 / sh)
+                
+                win32api.mouse_event(win32con.MOUSEEVENTF_ABSOLUTE | win32con.MOUSEEVENTF_MOVE, mx1, my1, 0, 0)
+                time.sleep(0.05)
+                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                time.sleep(0.05)
+                
+                start_time = time.time()
+                while True:
+                    elapsed = time.time() - start_time
+                    if elapsed >= duration:
+                        break
+                    t = elapsed / duration
+                    curr_x = int(rel_x1 + (rel_x2 - rel_x1) * t)
+                    curr_y = int(rel_y1 + (rel_y2 - rel_y1) * t)
+                    
+                    screen_x, screen_y = win32gui.ClientToScreen(hwnd, (curr_x, curr_y))
+                    mx = int(screen_x * 65535 / sw)
+                    my = int(screen_y * 65535 / sh)
+                    win32api.mouse_event(win32con.MOUSEEVENTF_ABSOLUTE | win32con.MOUSEEVENTF_MOVE, mx, my, 0, 0)
+                    time.sleep(0.01)
+
+                screen_x2, screen_y2 = win32gui.ClientToScreen(hwnd, (rel_x2, rel_y2))
+                mx2 = int(screen_x2 * 65535 / sw)
+                my2 = int(screen_y2 * 65535 / sh)
+                win32api.mouse_event(win32con.MOUSEEVENTF_ABSOLUTE | win32con.MOUSEEVENTF_MOVE, mx2, my2, 0, 0)
+                time.sleep(0.05)
+                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+                time.sleep(0.02)
+                
+            else:
+                # 纯软件队列模拟（PostMessage）
+                lparam1 = win32api.MAKELONG(rel_x1, rel_y1)
+                win32gui.PostMessage(hwnd, win32con.WM_MOUSEMOVE, 0, lparam1)
+                time.sleep(0.01)
+                win32gui.PostMessage(hwnd, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, lparam1)
+                time.sleep(0.05)
+
+                start_time = time.time()
+                while True:
+                    elapsed = time.time() - start_time
+                    if elapsed >= duration:
+                        break
+                    t = elapsed / duration
+                    curr_x = int(rel_x1 + (rel_x2 - rel_x1) * t)
+                    curr_y = int(rel_y1 + (rel_y2 - rel_y1) * t)
+                    
+                    lparam_move = win32api.MAKELONG(curr_x, curr_y)
+                    win32gui.PostMessage(hwnd, win32con.WM_MOUSEMOVE, win32con.MK_LBUTTON, lparam_move)
+                    time.sleep(0.01)
+
+                lparam2 = win32api.MAKELONG(rel_x2, rel_y2)
+                win32gui.PostMessage(hwnd, win32con.WM_MOUSEMOVE, win32con.MK_LBUTTON, lparam2)
+                win32gui.PostMessage(hwnd, win32con.WM_LBUTTONUP, 0, lparam2)
+
+        except Exception as e:
+            print(f"滑动异常: {e}")
+            
+        finally:
+            if move and original_pos:
+                try:
+                    win32api.SetCursorPos(original_pos)
+                except Exception:
+                    pass
+
+        if show_log:
+            mode_str = "物理闪现" if move else "纯后台"
+            print(f"滑动[{mode_str}]: 逻辑({x1}, {y1})->({x2}, {y2}) | 客户区({rel_x1}, {rel_y1})->({rel_x2}, {rel_y2})")
+
+    def scroll(self, x: int, y: int, delta: int = -120, times: int = 1, interval: float = 0.05, move: bool = True, show_log: bool = False):
+        """统一鼠标滚轮滚动接口"""
+        hwnd = _TARGET_HWND
+        if not hwnd: return
+
+        rel_x, rel_y = adapt_coord(x, y)
+        original_pos = None
+
+        win32gui.SendMessage(hwnd, win32con.WM_ACTIVATE, win32con.WA_ACTIVE, 0)
+
+        try:
+            if move:
+                original_pos = win32api.GetCursorPos()
+                screen_x, screen_y = win32gui.ClientToScreen(hwnd, (rel_x, rel_y))
+                win32api.SetCursorPos((screen_x, screen_y))
+                time.sleep(0.02)
+                
+                # 多次发送滚动事件，模拟真实的连续滚动
+                for _ in range(times):
+                    win32api.mouse_event(win32con.MOUSEEVENTF_WHEEL, 0, 0, delta, 0)
+                    time.sleep(interval)
+            else:
+                # WM_MOUSEWHEEL 期望的 lparam 是屏幕绝对坐标
+                screen_x, screen_y = win32gui.ClientToScreen(hwnd, (rel_x, rel_y))
+                wparam = win32api.MAKELONG(0, delta)
+                lparam_screen = win32api.MAKELONG(screen_x, screen_y)
+                
+                for _ in range(times):
+                    win32gui.PostMessage(hwnd, win32con.WM_MOUSEWHEEL, wparam, lparam_screen)
+                    time.sleep(interval)
+
+        except Exception as e:
+            print(f"滚动异常: {e}")
+            
+        finally:
+            if move and original_pos:
+                try:
+                    win32api.SetCursorPos(original_pos)
+                except Exception:
+                    pass
+
+        if show_log:
+            mode_str = "物理闪现" if move else "纯后台"
+            print(f"滚动[{mode_str}]: 逻辑({x}, {y}), 滚轮量={delta}")
+
+    def swipe_in_region(self, region: tuple, direction: str = 'up', duration: float = 0.5, move: bool = True, show_log: bool = False):
+        """
+        在指定区域内按方向滑动
+        :param region: (x1, y1, x2, y2)
+        :param direction: 'up' (向上滑, 也就是下拉页面), 'down' (向下滑), 'left' (向左滑), 'right' (向右滑)
+        """
+        x1, y1, x2, y2 = region
+        cx = (x1 + x2) // 2
+        cy = (y1 + y2) // 2
+        
+        pad_x = (x2 - x1) * 0.2
+        pad_y = (y2 - y1) * 0.2
+        
+        start_x, end_x = cx, cx
+        start_y, end_y = cy, cy
+        
+        if direction == 'up':
+            start_y = int(y2 - pad_y)
+            end_y = int(y1 + pad_y)
+        elif direction == 'down':
+            start_y = int(y1 + pad_y)
+            end_y = int(y2 - pad_y)
+        elif direction == 'left':
+            start_x = int(x2 - pad_x)
+            end_x = int(x1 + pad_x)
+        elif direction == 'right':
+            start_x = int(x1 + pad_x)
+            end_x = int(x2 - pad_x)
+            
+        self.swipe(start_x, start_y, end_x, end_y, duration=duration, move=move, show_log=show_log)
 
     def send_key(self, key: str, show_log: bool = False):
         """纯后台按键"""
@@ -332,10 +505,19 @@ class PCAutomation:
 class ImageMatcher:
     @staticmethod
     def compare_template(screen_bgr, template_path: str, threshold: float = 0.8) -> Dict:
-        """模板匹配（支持分辨率自适应缩放）"""
-        template_bgr = cv2.imread(template_path)
-        if template_bgr is None:
+        """模板匹配（支持分辨率自适应缩放 + 透明通道Mask免疫背景干扰）"""
+        # 以包含 Alpha 通道的方式读取图片 (IMREAD_UNCHANGED)
+        template_img = cv2.imread(template_path, cv2.IMREAD_UNCHANGED)
+        if template_img is None:
             raise ValueError(f"无法读取模板图片: {template_path}")
+
+        # 分离透明通道掩码 (Alpha Mask)
+        alpha_mask = None
+        if len(template_img.shape) == 3 and template_img.shape[2] == 4:
+            template_bgr = template_img[:, :, :3]
+            alpha_mask = template_img[:, :, 3]
+        else:
+            template_bgr = template_img
 
         # 1. 获取当前分辨率与基础分辨率
         curr_w = RESOLUTION_CONFIG.get("curr_width")
@@ -352,27 +534,48 @@ class ImageMatcher:
             new_w = max(1, int(template_bgr.shape[1] * scale_x))
             new_h = max(1, int(template_bgr.shape[0] * scale_y))
 
-            # 智能选择插值算法：
-            # - 放大图片 (1080p -> 2K) 使用 INTER_LINEAR，边缘平滑
-            # - 缩小图片 (2K -> 1080p) 使用 INTER_AREA，防止像素特征丢失
+            # 智能选择插值算法
             if scale_x > 1.0 or scale_y > 1.0:
                 interp = cv2.INTER_LINEAR
             else:
                 interp = cv2.INTER_AREA
 
             template_bgr = cv2.resize(template_bgr, (new_w, new_h), interpolation=interp)
+            
+            # 如果有透明掩码，也要等比例缩放掩码
+            if alpha_mask is not None:
+                alpha_mask = cv2.resize(alpha_mask, (new_w, new_h), interpolation=interp)
 
-        # 3. 统一转换为灰度图后执行底层匹配
-        res = cv2.matchTemplate(cv2.cvtColor(screen_bgr, cv2.COLOR_BGR2GRAY),
-                                cv2.cvtColor(template_bgr, cv2.COLOR_BGR2GRAY),
-                                cv2.TM_CCOEFF_NORMED)
+        # 3. 统一转换为灰度图
+        screen_gray = cv2.cvtColor(screen_bgr, cv2.COLOR_BGR2GRAY)
+        template_gray = cv2.cvtColor(template_bgr, cv2.COLOR_BGR2GRAY)
+
+        # 4. 执行底层匹配（带 Mask 容错）
+        try:
+            if alpha_mask is not None:
+                res = cv2.matchTemplate(screen_gray, template_gray, cv2.TM_CCOEFF_NORMED, mask=alpha_mask)
+            else:
+                res = cv2.matchTemplate(screen_gray, template_gray, cv2.TM_CCOEFF_NORMED)
+        except Exception:
+            # 兜底：防止某些极老版本的 OpenCV 不支持 mask 参数
+            res = cv2.matchTemplate(screen_gray, template_gray, cv2.TM_CCOEFF_NORMED)
+
+        # 将矩阵中的 inf 和 NaN 全部替换为 0.0，防止程序崩溃或异常误判
+        res = np.nan_to_num(res, nan=0.0, posinf=0.0, neginf=0.0)
 
         _, max_val, _, max_loc = cv2.minMaxLoc(res)
         is_match = max_val >= threshold
 
-        # 4. 计算匹配到的中心点坐标
+        # 5. 计算匹配到的中心点坐标
         cx = max_loc[0] + template_bgr.shape[1] // 2
         cy = max_loc[1] + template_bgr.shape[0] // 2
+
+        # 反向缩放回逻辑坐标
+        if curr_w and curr_h and (curr_w != base_w or curr_h != base_h):
+            scale_x = curr_w / base_w
+            scale_y = curr_h / base_h
+            cx = int(cx / scale_x)
+            cy = int(cy / scale_y)
 
         return {
             "is_match": is_match,
